@@ -12,6 +12,8 @@
 // of what the new port_<platform>.h file must provide.
 #if defined(LEVELDB_PLATFORM_POSIX)
 #  include "port/port_posix.h"
+#elif defined(LEVELDB_PLATFORM_OSX)
+#  include "port/port_osx.h"
 #elif defined(LEVELDB_PLATFORM_CHROMIUM)
 #  include "port/port_chromium.h"
 #elif defined(LEVELDB_PLATFORM_ANDROID)

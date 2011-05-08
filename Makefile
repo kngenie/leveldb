@@ -10,7 +10,13 @@ OPT = -g2
 
 CFLAGS = -c -DLEVELDB_PLATFORM_POSIX -I. -I./include -std=c++0x $(OPT)
 
+# For OS X
+#CFLAGS = -c -DLEVELDB_PLATFORM_OSX -I. -I./include $(OPT)
+
 LDFLAGS=-lpthread
+
+# Replace port_posix.o with port_osx.o below to build on
+# OS X.
 
 LIBOBJECTS = \
 	./db/builder.o \
