@@ -43,7 +43,7 @@ AM_CPPFLAGS = -DNDEBUG -DLEVELDB_PLATFORM_POSIX
 
 libleveldb_la_LDFLAGS = -lpthread
 
-include_HEADERS = include/leveldb/cache.h include/leveldb/comparator.h \
+pkginclude_HEADERS = include/leveldb/cache.h include/leveldb/comparator.h \
 	include/leveldb/db.h include/leveldb/env.h include/leveldb/iterator.h \
 	include/leveldb/options.h include/leveldb/slice.h \
 	include/leveldb/status.h include/leveldb/table.h \

@@ -1,0 +1,21 @@
+Source: libleveldb
+Priority: extra
+Maintainer: Kenji Nagahashi <kenji@archive.org>
+Build-Depends: debhelper (>= 7), autotools-dev
+Standards-Version: 3.8.3
+Section: libs
+Homepage: http://code.google.com/p/leveldb/
+
+Package: libleveldb-dev
+Section: libdevel
+Architecture: any
+Depends: libleveldb (= ${binary:Version})
+Description: a fast and lightweight key/value database library
+ LevelDB is a library that implements a fast persistent key-value store.
+
+Package: libleveldb
+Section: libs
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: a fast and lightweight key/value database library (dev package)
+ LevelDB is a library that implements a fast persistent key-value store.
