@@ -319,13 +319,15 @@ class MemTableConstructor: public Constructor {
       : Constructor(cmp),
         internal_comparator_(cmp) {
     memtable_ = new MemTable(internal_comparator_);
+    memtable_->Ref();
   }
   ~MemTableConstructor() {
-    delete memtable_;
+    memtable_->Unref();
   }
   virtual Status FinishImpl(const Options& options, const KVMap& data) {
-    delete memtable_;
+    memtable_->Unref();
     memtable_ = new MemTable(internal_comparator_);
+    memtable_->Ref();
     int seq = 1;
     for (KVMap::const_iterator it = data.begin();
          it != data.end();
@@ -725,27 +727,32 @@ TEST(Harness, RandomizedLongDB) {
   Test(&rnd);
 
   // We must have created enough data to force merging
-  std::string l0_files, l1_files;
-  ASSERT_TRUE(db()->GetProperty("leveldb.num-files-at-level0", &l0_files));
-  ASSERT_TRUE(db()->GetProperty("leveldb.num-files-at-level1", &l1_files));
-  ASSERT_GT(atoi(l0_files.c_str()) + atoi(l1_files.c_str()), 0);
-
+  int files = 0;
+  for (int level = 0; level < config::kNumLevels; level++) {
+    std::string value;
+    char name[100];
+    snprintf(name, sizeof(name), "leveldb.num-files-at-level%d", level);
+    ASSERT_TRUE(db()->GetProperty(name, &value));
+    files += atoi(value.c_str());
+  }
+  ASSERT_GT(files, 0);
 }
 
 class MemTableTest { };
 
 TEST(MemTableTest, Simple) {
   InternalKeyComparator cmp(BytewiseComparator());
-  MemTable memtable(cmp);
+  MemTable* memtable = new MemTable(cmp);
+  memtable->Ref();
   WriteBatch batch;
   WriteBatchInternal::SetSequence(&batch, 100);
   batch.Put(std::string("k1"), std::string("v1"));
   batch.Put(std::string("k2"), std::string("v2"));
   batch.Put(std::string("k3"), std::string("v3"));
   batch.Put(std::string("largekey"), std::string("vlarge"));
-  ASSERT_TRUE(WriteBatchInternal::InsertInto(&batch, &memtable).ok());
+  ASSERT_TRUE(WriteBatchInternal::InsertInto(&batch, memtable).ok());
 
-  Iterator* iter = memtable.NewIterator();
+  Iterator* iter = memtable->NewIterator();
   iter->SeekToFirst();
   while (iter->Valid()) {
     fprintf(stderr, "key: '%s' -> '%s'\n",
@@ -755,6 +762,7 @@ TEST(MemTableTest, Simple) {
   }
 
   delete iter;
+  memtable->Unref();
 }
 
 static bool Between(uint64_t val, uint64_t low, uint64_t high) {

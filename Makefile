@@ -4,13 +4,46 @@
 
 CC = g++
 
-# Uncomment one of the following to switch between debug and opt mode
-#OPT = -O2 -DNDEBUG
-OPT = -g2
+#-----------------------------------------------
+# Uncomment exactly one of the lines labelled (A), (B), and (C) below
+# to switch between compilation modes.
 
-CFLAGS = -c -DLEVELDB_PLATFORM_POSIX -I. -I./include -std=c++0x $(OPT)
+OPT = -O2 -DNDEBUG       # (A) Production use (optimized mode)
+# OPT = -g2              # (B) Debug mode, w/ full line-level debugging symbols
+# OPT = -O2 -g2 -DNDEBUG # (C) Profiling mode: opt, but w/debugging symbols
+#-----------------------------------------------
 
-LDFLAGS=-lpthread
+
+UNAME := $(shell uname)
+
+ifeq ($(UNAME), Darwin)
+# To build for iOS, set PLATFORM=IOS.
+ifndef PLATFORM
+PLATFORM=OSX
+endif # PLATFORM
+PLATFORM_CFLAGS = -DLEVELDB_PLATFORM_OSX
+PORT_MODULE = port_osx.o
+else # UNAME
+PLATFORM_CFLAGS = -DLEVELDB_PLATFORM_POSIX -std=c++0x
+PORT_MODULE = port_posix.o
+endif # UNAME
+
+# Set 'SNAPPY' to 1 if you have the Snappy compression library
+# installed and want to enable its use in LevelDB
+# (see http://code.google.com/p/snappy/)
+SNAPPY=0
+
+ifeq ($(SNAPPY), 0)
+SNAPPY_CFLAGS=
+SNAPPY_LDFLAGS=
+else
+SNAPPY_CFLAGS=-DSNAPPY
+SNAPPY_LDFLAGS=-lsnappy
+endif
+
+CFLAGS = -c -I. -I./include $(PLATFORM_CFLAGS) $(OPT) $(SNAPPY_CFLAGS)
+
+LDFLAGS=-lpthread $(SNAPPY_LDFLAGS)
 
 LIBOBJECTS = \
 	./db/builder.o \
@@ -26,7 +59,7 @@ LIBOBJECTS = \
 	./db/version_edit.o \
 	./db/version_set.o \
 	./db/write_batch.o \
-	./port/port_posix.o \
+	./port/$(PORT_MODULE) \
 	./table/block.o \
 	./table/block_builder.o \
 	./table/format.o \
@@ -65,17 +98,30 @@ TESTS = \
 	skiplist_test \
 	table_test \
 	version_edit_test \
+	version_set_test \
 	write_batch_test
 
 PROGRAMS = db_bench $(TESTS)
 
-all: $(PROGRAMS)
+LIBRARY = libleveldb.a
+
+ifeq ($(PLATFORM), IOS)
+# Only XCode can build executable applications for iOS.
+all: $(LIBRARY)
+else
+all: $(PROGRAMS) $(LIBRARY)
+endif
 
 check: $(TESTS)
 	for t in $(TESTS); do echo "***** Running $$t"; ./$$t || exit 1; done
 
 clean:
-	rm -f $(PROGRAMS) */*.o
+	-rm -f $(PROGRAMS) $(LIBRARY) */*.o ios-x86/*/*.o ios-arm/*/*.o
+	-rmdir -p ios-x86/* ios-arm/*
+
+$(LIBRARY): $(LIBOBJECTS)
+	rm -f $@
+	$(AR) -rs $@ $(LIBOBJECTS)
 
 db_bench: db/db_bench.o $(LIBOBJECTS) $(TESTUTIL)
 	$(CC) $(LDFLAGS) db/db_bench.o $(LIBOBJECTS) $(TESTUTIL) -o $@
@@ -119,11 +165,28 @@ skiplist_test: db/skiplist_test.o $(LIBOBJECTS) $(TESTHARNESS)
 version_edit_test: db/version_edit_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(CC) $(LDFLAGS) db/version_edit_test.o $(LIBOBJECTS) $(TESTHARNESS) -o $@
 
+version_set_test: db/version_set_test.o $(LIBOBJECTS) $(TESTHARNESS)
+	$(CC) $(LDFLAGS) db/version_set_test.o $(LIBOBJECTS) $(TESTHARNESS) -o $@
+
 write_batch_test: db/write_batch_test.o $(LIBOBJECTS) $(TESTHARNESS)
 	$(CC) $(LDFLAGS) db/write_batch_test.o $(LIBOBJECTS) $(TESTHARNESS) -o $@
 
+ifeq ($(PLATFORM), IOS)
+# For iOS, create universal object files to be used on both the simulator and
+# a device.
+SIMULATORROOT=/Developer/Platforms/iPhoneSimulator.platform/Developer
+DEVICEROOT=/Developer/Platforms/iPhoneOS.platform/Developer
+IOSVERSION=$(shell defaults read /Developer/Platforms/iPhoneOS.platform/version CFBundleShortVersionString)
+.cc.o:
+	mkdir -p ios-x86/$(dir $@)
+	$(SIMULATORROOT)/usr/bin/$(CC) $(CFLAGS) -isysroot $(SIMULATORROOT)/SDKs/iPhoneSimulator$(IOSVERSION).sdk -arch i686 $< -o ios-x86/$@
+	mkdir -p ios-arm/$(dir $@)
+	$(DEVICEROOT)/usr/bin/$(CC) $(CFLAGS) -isysroot $(DEVICEROOT)/SDKs/iPhoneOS$(IOSVERSION).sdk -arch armv6 -arch armv7 $< -o ios-arm/$@
+	lipo ios-x86/$@ ios-arm/$@ -create -output $@
+else
 .cc.o:
 	$(CC) $(CFLAGS) $< -o $@
+endif
 
 # TODO(gabor): dependencies for .o files
 # TODO(gabor): Build library

@@ -35,6 +35,21 @@ class Version;
 class VersionSet;
 class WritableFile;
 
+// Return the smallest index i such that files[i]->largest >= key.
+// Return files.size() if there is no such file.
+// REQUIRES: "files" contains a sorted list of non-overlapping files.
+extern int FindFile(const InternalKeyComparator& icmp,
+                    const std::vector<FileMetaData*>& files,
+                    const Slice& key);
+
+// Returns true iff some file in "files" overlaps some part of
+// [smallest,largest].
+extern bool SomeFileOverlapsRange(
+    const InternalKeyComparator& icmp,
+    const std::vector<FileMetaData*>& files,
+    const InternalKey& smallest,
+    const InternalKey& largest);
+
 class Version {
  public:
   // Append to *iters a sequence of iterators that will
@@ -42,10 +57,33 @@ class Version {
   // REQUIRES: This version has been saved (see VersionSet::SaveTo)
   void AddIterators(const ReadOptions&, std::vector<Iterator*>* iters);
 
+  // Lookup the value for key.  If found, store it in *val and
+  // return OK.  Else return a non-OK status.  Fills *stats.
+  // REQUIRES: lock is not held
+  struct GetStats {
+    FileMetaData* seek_file;
+    int seek_file_level;
+  };
+  Status Get(const ReadOptions&, const LookupKey& key, std::string* val,
+             GetStats* stats);
+
+  // Adds "stats" into the current state.  Returns true if a new
+  // compaction may need to be triggered, false otherwise.
+  // REQUIRES: lock is held
+  bool UpdateStats(const GetStats& stats);
+
   // Reference count management (so Versions do not disappear out from
   // under live iterators)
   void Ref();
   void Unref();
+
+  // Returns true iff some file in the specified level overlaps
+  // some part of [smallest,largest].
+  bool OverlapInLevel(int level,
+                      const InternalKey& smallest,
+                      const InternalKey& largest);
+
+  int NumFiles(int level) const { return files_[level].size(); }
 
   // Return a human readable string that describes this version's contents.
   std::string DebugString() const;
@@ -59,11 +97,15 @@ class Version {
 
   VersionSet* vset_;            // VersionSet to which this Version belongs
   Version* next_;               // Next version in linked list
+  Version* prev_;               // Previous version in linked list
   int refs_;                    // Number of live refs to this version
-  MemTable* cleanup_mem_;       // NULL, or table to delete when version dropped
 
   // List of files per level
   std::vector<FileMetaData*> files_[config::kNumLevels];
+
+  // Next file to compact based on seek stats.
+  FileMetaData* file_to_compact_;
+  int file_to_compact_level_;
 
   // Level that should be compacted next and its compaction score.
   // Score < 1 means compaction is not strictly needed.  These fields
@@ -72,8 +114,9 @@ class Version {
   int compaction_level_;
 
   explicit Version(VersionSet* vset)
-      : vset_(vset), next_(NULL), refs_(0),
-        cleanup_mem_(NULL),
+      : vset_(vset), next_(this), prev_(this), refs_(0),
+        file_to_compact_(NULL),
+        file_to_compact_level_(-1),
         compaction_score_(-1),
         compaction_level_(-1) {
   }
@@ -95,10 +138,8 @@ class VersionSet {
 
   // Apply *edit to the current version to form a new descriptor that
   // is both saved to persistent state and installed as the new
-  // current version.  Iff Apply() returns OK, arrange to delete
-  // cleanup_mem (if cleanup_mem != NULL) when it is no longer needed
-  // by older versions.
-  Status LogAndApply(VersionEdit* edit, MemTable* cleanup_mem);
+  // current version.
+  Status LogAndApply(VersionEdit* edit);
 
   // Recover the last saved descriptor from persistent storage.
   Status Recover();
@@ -161,7 +202,10 @@ class VersionSet {
   Iterator* MakeInputIterator(Compaction* c);
 
   // Returns true iff some level needs a compaction.
-  bool NeedsCompaction() const { return current_->compaction_score_ >= 1; }
+  bool NeedsCompaction() const {
+    Version* v = current_;
+    return (v->compaction_score_ >= 1) || (v->file_to_compact_ != NULL);
+  }
 
   // Add all files listed in any live version to *live.
   // May also mutate some internal state.
@@ -171,19 +215,20 @@ class VersionSet {
   // "key" as of version "v".
   uint64_t ApproximateOffsetOf(Version* v, const InternalKey& key);
 
+  // Return a human-readable short (single-line) summary of the number
+  // of files per level.  Uses *scratch as backing store.
+  struct LevelSummaryStorage {
+    char buffer[100];
+  };
+  const char* LevelSummary(LevelSummaryStorage* scratch) const;
+
  private:
   class Builder;
 
   friend class Compaction;
   friend class Version;
 
-  Status Finalize(Version* v);
-
-  // Delete any old versions that are no longer needed.
-  void MaybeDeleteOldVersions();
-
-  struct BySmallestKey;
-  Status SortLevel(Version* v, uint64_t level);
+  void Finalize(Version* v);
 
   void GetOverlappingInputs(
       int level,
@@ -202,6 +247,8 @@ class VersionSet {
 
   void SetupOtherInputs(Compaction* c);
 
+  void AppendVersion(Version* v);
+
   Env* const env_;
   const std::string dbname_;
   const Options* const options_;
@@ -216,10 +263,8 @@ class VersionSet {
   // Opened lazily
   WritableFile* descriptor_file_;
   log::Writer* descriptor_log_;
-
-  // Versions are kept in a singly linked list that is never empty
-  Version* current_;    // Pointer to the last (newest) list entry
-  Version* oldest_;     // Pointer to the first (oldest) list entry
+  Version dummy_versions_;  // Head of circular doubly-linked list of versions.
+  Version* current_;        // == dummy_versions_.prev_
 
   // Per-level key at which the next compaction at that level should start.
   // Either an empty string, or a valid InternalKey.
@@ -265,8 +310,8 @@ class Compaction {
   bool IsBaseLevelForKey(const Slice& user_key);
 
   // Returns true iff we should stop building the current output
-  // before processing "key".
-  bool ShouldStopBefore(const InternalKey& key);
+  // before processing "internal_key".
+  bool ShouldStopBefore(const Slice& internal_key);
 
   // Release the input version for the compaction, once the compaction
   // is successful.
